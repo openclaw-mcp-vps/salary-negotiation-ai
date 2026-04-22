@@ -1,304 +1,157 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { motion } from "framer-motion";
-import { Copy, MailCheck, MessageSquareQuote } from "lucide-react";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
-
-import { Badge } from "@/components/ui/badge";
+import { Copy, LoaderCircle, WandSparkles } from "lucide-react";
+import type { GeneratedResponse, OfferAnalysis, ResponseType, Tone } from "@/lib/types";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  type GeneratedResponse,
-  generateResponseInputSchema,
-  type OfferAnalysis,
-  responseMessageTypeSchema,
-  responseToneSchema,
-} from "@/types/negotiation";
 
-const formSchema = generateResponseInputSchema
-  .pick({
-    messageType: true,
-    tone: true,
-    goal: true,
-    managerName: true,
-    companyName: true,
-    additionalContext: true,
-  })
-  .extend({
-    managerName: z.string().max(120).optional(),
-    companyName: z.string().max(120).optional(),
-    additionalContext: z.string().max(3000).optional(),
-  });
-
-type FormValues = z.infer<typeof formSchema>;
-
-type ResponseGeneratorProps = {
+interface ResponseGeneratorProps {
+  offerText: string;
   analysis: OfferAnalysis | null;
+}
+
+const responseTypeLabels: Record<ResponseType, string> = {
+  counter_offer: "Counter-Offer",
+  rebuttal: "Rebuttal",
+  follow_up: "Follow-Up"
 };
 
-export function ResponseGenerator({ analysis }: ResponseGeneratorProps) {
+const toneLabels: Record<Tone, string> = {
+  assertive: "Assertive",
+  collaborative: "Collaborative",
+  concise: "Concise"
+};
+
+export function ResponseGenerator({ offerText, analysis }: ResponseGeneratorProps) {
+  const [responseType, setResponseType] = useState<ResponseType>("counter_offer");
+  const [tone, setTone] = useState<Tone>("assertive");
+  const [targetCompensation, setTargetCompensation] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [generated, setGenerated] = useState<GeneratedResponse | null>(null);
-  const [apiError, setApiError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<"subject" | "body" | null>(null);
 
-  const {
-    register,
-    handleSubmit,
-    formState: { errors, isSubmitting },
-  } = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      messageType: "counter_offer",
-      tone: "collaborative",
-      goal: "Improve total comp while staying in a strong relationship with the recruiter.",
-    },
-  });
+  const effectiveTargetComp = useMemo(() => {
+    if (targetCompensation.trim().length > 0) {
+      return targetCompensation.trim();
+    }
 
-  const disabled = useMemo(() => !analysis, [analysis]);
+    return analysis?.suggestedTargetComp ?? "";
+  }, [analysis?.suggestedTargetComp, targetCompensation]);
 
-  async function onSubmit(values: FormValues) {
+  async function handleGenerate() {
+    setErrorMessage(null);
+
     if (!analysis) {
-      setApiError("Run Offer Analyzer first so the draft is grounded in your package.");
+      setErrorMessage("Run Offer Analyzer first so the response is grounded in real leverage and constraints.");
       return;
     }
 
-    setApiError(null);
-    const response = await fetch("/api/generate-response", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...values,
-        offerAnalysis: analysis,
-      }),
-    });
+    setIsLoading(true);
 
-    const payload = (await response.json()) as
-      | { response: GeneratedResponse }
-      | { error: string };
+    try {
+      const response = await fetch("/api/generate-response", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          mode: "message",
+          offerText,
+          analysis,
+          responseType,
+          tone,
+          targetCompensation: effectiveTargetComp
+        })
+      });
 
-    if (!response.ok || !("response" in payload)) {
-      setApiError(
-        "error" in payload
-          ? payload.error
-          : "Unable to generate a draft response right now.",
-      );
-      return;
+      if (!response.ok) {
+        throw new Error("Could not generate response");
+      }
+
+      const payload = (await response.json()) as { generated: GeneratedResponse };
+      setGenerated(payload.generated);
+    } catch {
+      setErrorMessage("Response generation failed. Retry after refreshing analysis.");
+    } finally {
+      setIsLoading(false);
     }
-
-    setGenerated(payload.response);
   }
 
-  async function copy(value: string, type: "subject" | "body") {
-    await navigator.clipboard.writeText(value);
-    setCopied(type);
-    setTimeout(() => setCopied(null), 1200);
+  async function copyMessage() {
+    if (!generated) return;
+    await navigator.clipboard.writeText(`Subject: ${generated.subject}\n\n${generated.message}`);
   }
 
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-2xl">
-            <MessageSquareQuote className="h-6 w-6 text-cyan-300" />
-            Response Generator
-          </CardTitle>
-          <CardDescription>
-            Generate a polished counter-offer, rebuttal, follow-up, or final close
-            message using your analysis context.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-200">
-                  Message Type
-                </label>
-                <select
-                  className="h-10 w-full rounded-md border border-slate-600 bg-slate-950 px-3 text-sm"
-                  {...register("messageType")}
-                  disabled={disabled}
-                >
-                  {responseMessageTypeSchema.options.map((option) => (
-                    <option key={option} value={option}>
-                      {option.replaceAll("_", " ")}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-200">
-                  Tone
-                </label>
-                <select
-                  className="h-10 w-full rounded-md border border-slate-600 bg-slate-950 px-3 text-sm"
-                  {...register("tone")}
-                  disabled={disabled}
-                >
-                  {responseToneSchema.options.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-200">
-                Goal for this message
-              </label>
-              <Textarea
-                rows={3}
-                placeholder="Example: Hold a higher base ask while staying collaborative and moving quickly to close."
-                {...register("goal")}
-                disabled={disabled}
-              />
-              {errors.goal ? (
-                <p className="mt-1 text-xs text-rose-300">{errors.goal.message}</p>
-              ) : null}
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-200">
-                  Hiring Manager / Recruiter Name
-                </label>
-                <Input placeholder="Alex" {...register("managerName")} disabled={disabled} />
-              </div>
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-200">
-                  Company Name
-                </label>
-                <Input placeholder="Acme AI" {...register("companyName")} disabled={disabled} />
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-200">
-                Extra Context (optional)
-              </label>
-              <Textarea
-                rows={3}
-                placeholder="Any competing offer timelines, constraints, or personal priorities to include."
-                {...register("additionalContext")}
-                disabled={disabled}
-              />
-            </div>
-
-            {apiError ? (
-              <p className="rounded-md border border-rose-400/40 bg-rose-500/10 p-3 text-sm text-rose-200">
-                {apiError}
-              </p>
-            ) : null}
-
-            <Button type="submit" className="w-full sm:w-auto" disabled={isSubmitting || disabled}>
-              {isSubmitting ? "Generating draft..." : "Generate Negotiation Draft"}
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <WandSparkles className="h-5 w-5 text-cyan-300" />
+          Response Generator
+        </CardTitle>
+        <CardDescription>Generate an email draft for your current negotiation stage.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 sm:grid-cols-3">
+          {(Object.keys(responseTypeLabels) as ResponseType[]).map((item) => (
+            <Button
+              key={item}
+              onClick={() => setResponseType(item)}
+              type="button"
+              variant={responseType === item ? "default" : "secondary"}
+            >
+              {responseTypeLabels[item]}
             </Button>
-          </form>
-        </CardContent>
-      </Card>
+          ))}
+        </div>
 
-      {generated ? (
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35 }}
-          className="space-y-4"
-        >
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <MailCheck className="h-4 w-4 text-cyan-300" />
-                Draft Ready
-              </CardTitle>
-              <CardDescription>
-                Copy this into email and personalize details before sending.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm">
-              <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Subject</p>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => copy(generated.subjectLine, "subject")}
-                    type="button"
-                  >
-                    <Copy className="mr-1 h-3.5 w-3.5" />
-                    {copied === "subject" ? "Copied" : "Copy"}
-                  </Button>
-                </div>
-                <p className="text-slate-100">{generated.subjectLine}</p>
-              </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {(Object.keys(toneLabels) as Tone[]).map((item) => (
+            <Button key={item} onClick={() => setTone(item)} type="button" variant={tone === item ? "default" : "secondary"}>
+              {toneLabels[item]}
+            </Button>
+          ))}
+        </div>
 
-              <div className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Message</p>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => copy(generated.messageBody, "body")}
-                    type="button"
-                  >
-                    <Copy className="mr-1 h-3.5 w-3.5" />
-                    {copied === "body" ? "Copied" : "Copy"}
-                  </Button>
-                </div>
-                <pre className="whitespace-pre-wrap font-sans text-slate-100">
-                  {generated.messageBody}
-                </pre>
-              </div>
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-[0.16em] text-zinc-400">Target Compensation Ask</p>
+          <Input
+            onChange={(event) => setTargetCompensation(event.target.value)}
+            placeholder={analysis?.suggestedTargetComp ?? "Ex: $220k base + $120k equity + $30k sign-on"}
+            value={targetCompensation}
+          />
+        </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">
-                    Talking points for calls
-                  </p>
-                  <div className="space-y-2 text-slate-200">
-                    {generated.talkingPoints.map((item) => (
-                      <p key={item}>• {item}</p>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">
-                    Follow-up cadence
-                  </p>
-                  <div className="space-y-2 text-slate-200">
-                    {generated.followUpCadence.map((item) => (
-                      <p key={item}>• {item}</p>
-                    ))}
-                  </div>
-                </div>
-              </div>
+        <Button className="w-full sm:w-auto" disabled={isLoading} onClick={handleGenerate} type="button">
+          {isLoading ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
+          Generate Draft
+        </Button>
+        {errorMessage ? <p className="text-sm text-rose-300">{errorMessage}</p> : null}
 
-              <div className="flex flex-wrap gap-2">
-                {generated.coachNotes.map((item) => (
-                  <Badge key={item} variant="muted">
-                    {item}
-                  </Badge>
+        {generated ? (
+          <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950/70 p-4 text-sm">
+            <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+              <p className="font-medium text-zinc-100">Subject: {generated.subject}</p>
+              <Button onClick={copyMessage} size="sm" type="button" variant="ghost">
+                <Copy className="mr-1 h-3.5 w-3.5" />
+                Copy
+              </Button>
+            </div>
+            <p className="whitespace-pre-wrap leading-relaxed text-zinc-300">{generated.message}</p>
+            <div>
+              <p className="font-medium text-zinc-100">Talking Points</p>
+              <ul className="mt-1 list-disc space-y-1 pl-5 text-zinc-300">
+                {generated.talkingPoints.map((point) => (
+                  <li key={point}>{point}</li>
                 ))}
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
-      ) : null}
-    </div>
+              </ul>
+            </div>
+            <p className="text-emerald-300">Next step: {generated.nextStep}</p>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }

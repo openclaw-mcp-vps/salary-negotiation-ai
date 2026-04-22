@@ -1,87 +1,32 @@
-import crypto from "node:crypto";
-import { lemonSqueezySetup } from "@lemonsqueezy/lemonsqueezy.js";
+import Stripe from "stripe";
 
-type LemonWebhookPayload = {
-  meta?: {
-    event_name?: string;
-  };
-  data?: {
-    id?: string;
-    attributes?: {
-      identifier?: string;
-      user_email?: string;
-      status?: string;
-      first_order_item?: {
-        product_id?: number;
-      };
-      created_at?: string;
-      updated_at?: string;
-    };
-  };
-};
+// Route kept at /api/webhooks/lemonsqueezy for backward compatibility,
+// but payment processing is handled through Stripe events.
+export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_placeholder");
 
-let initialized = false;
-
-export function setupLemonSqueezySdkIfConfigured() {
-  const apiKey = process.env.LEMON_SQUEEZY_API_KEY;
-  if (!apiKey || initialized) {
-    return;
+export function constructStripeEvent(payload: string, signature: string | null) {
+  if (!signature) {
+    throw new Error("Missing Stripe signature header");
   }
 
-  lemonSqueezySetup({ apiKey });
-  initialized = true;
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!secret) {
+    throw new Error("STRIPE_WEBHOOK_SECRET is not configured");
+  }
+
+  return stripe.webhooks.constructEvent(payload, signature, secret);
 }
 
-export function getCheckoutUrl() {
-  const raw = process.env.NEXT_PUBLIC_LEMON_SQUEEZY_PRODUCT_ID;
-  if (!raw) {
+export function extractPaidEmail(event: Stripe.Event) {
+  if (event.type !== "checkout.session.completed") {
     return null;
   }
 
-  if (/^https?:\/\//.test(raw)) {
-    return raw;
-  }
+  const session = event.data.object as Stripe.Checkout.Session;
+  const candidate =
+    session.customer_details?.email ||
+    (typeof session.customer_email === "string" ? session.customer_email : null);
 
-  return `https://checkout.lemonsqueezy.com/buy/${raw}`;
-}
-
-export function verifyWebhookSignature(rawBody: string, signature: string | null) {
-  const secret = process.env.LEMON_SQUEEZY_WEBHOOK_SECRET;
-  if (!secret || !signature) {
-    return false;
-  }
-
-  const digest = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-
-  try {
-    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
-  } catch {
-    return false;
-  }
-}
-
-export function normalizeWebhookPayload(payload: LemonWebhookPayload) {
-  const event = payload.meta?.event_name ?? "unknown";
-  const orderId = payload.data?.attributes?.identifier ?? payload.data?.id ?? "";
-  const email = payload.data?.attributes?.user_email ?? "";
-  const productId = String(payload.data?.attributes?.first_order_item?.product_id ?? "unknown");
-
-  if (!orderId || !email) {
-    return null;
-  }
-
-  const status = payload.data?.attributes?.status?.toLowerCase();
-  const normalizedStatus =
-    status === "paid" || status === "refunded" ? status : "unknown";
-
-  return {
-    event,
-    id: payload.data?.id ?? orderId,
-    orderId,
-    email,
-    productId,
-    status: normalizedStatus as "paid" | "refunded" | "unknown",
-    createdAt: payload.data?.attributes?.created_at,
-    updatedAt: payload.data?.attributes?.updated_at,
-  };
+  return candidate?.trim().toLowerCase() || null;
 }

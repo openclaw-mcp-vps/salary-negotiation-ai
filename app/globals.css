@@ -2,66 +2,24 @@
 
 :root {
   color-scheme: dark;
-  --background: #0d1117;
-  --foreground: #e6edf3;
-  --muted: #161b22;
-  --card: #111827;
-  --border: #263042;
-  --accent: #22d3ee;
 }
 
 * {
-  border-color: var(--border);
+  box-sizing: border-box;
 }
 
 html,
 body {
-  background: radial-gradient(circle at 20% -10%, #17324b 0%, transparent 45%),
-    radial-gradient(circle at 80% 0%, #1f2d4a 0%, transparent 38%),
-    var(--background);
-  color: var(--foreground);
+  margin: 0;
   min-height: 100%;
+  background: #0d1117;
 }
 
 body {
-  font-family: var(--font-body), "Segoe UI", sans-serif;
+  color: #e6edf3;
 }
 
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  font-family: var(--font-heading), "Segoe UI", sans-serif;
-}
-
-::selection {
-  background-color: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
-@keyframes accordion-down {
-  from {
-    height: 0;
-  }
-  to {
-    height: var(--radix-accordion-content-height);
-  }
-}
-
-@keyframes accordion-up {
-  from {
-    height: var(--radix-accordion-content-height);
-  }
-  to {
-    height: 0;
-  }
-}
-
-.animate-accordion-down {
-  animation: accordion-down 0.2s ease-out;
-}
-
-.animate-accordion-up {
-  animation: accordion-up 0.2s ease-out;
+a {
+  color: inherit;
+  text-decoration: none;
 }

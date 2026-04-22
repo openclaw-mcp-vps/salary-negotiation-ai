@@ -1,91 +1,92 @@
 import { NextResponse } from "next/server";
-import { ZodError } from "zod";
+import { coachChat, generateResponse } from "@/lib/openai";
+import type { CoachMessage, OfferAnalysis, ResponseType, Tone } from "@/lib/types";
 
-import { generateResponseHeuristically } from "@/lib/heuristics";
-import { getOpenAIClient, hasOpenAIKey, OPENAI_MODEL } from "@/lib/openai";
-import {
-  generateResponseInputSchema,
-  generatedResponseSchema,
-  type GeneratedResponse,
-} from "@/types/negotiation";
-
-export const runtime = "nodejs";
-
-function responsePrompt(input: string) {
-  return `You are writing negotiation messages for a software engineer evaluating an offer.
-Return strict JSON with this shape:
-{
-  "subjectLine": string,
-  "messageBody": string,
-  "briefVersion": string,
-  "talkingPoints": string[],
-  "coachNotes": string[],
-  "followUpCadence": string[]
+interface MessageModeRequest {
+  mode: "message";
+  offerText: string;
+  analysis: OfferAnalysis;
+  responseType: ResponseType;
+  tone: Tone;
+  targetCompensation?: string;
 }
-Rules:
-- messageBody should be ready to send as email, with greeting and sign-off placeholders.
-- Tailor tone to user-selected style.
-- Ask should align with counter strategy in offerAnalysis.
-- Avoid fluff. Be professional and specific.
-Input JSON:\n${input}`;
+
+interface ChatModeRequest {
+  mode: "chat";
+  offerText: string;
+  analysis: OfferAnalysis;
+  history: CoachMessage[];
+  userMessage: string;
+}
+
+type Payload = MessageModeRequest | ChatModeRequest;
+
+function isOfferAnalysis(value: unknown): value is OfferAnalysis {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<OfferAnalysis>;
+
+  return (
+    typeof candidate.summary === "string" &&
+    Array.isArray(candidate.leveragePoints) &&
+    Array.isArray(candidate.riskFlags) &&
+    Array.isArray(candidate.negotiationPlan) &&
+    typeof candidate.suggestedTargetComp === "string" &&
+    typeof candidate.rationale === "string"
+  );
 }
 
 export async function POST(request: Request) {
   try {
-    const raw = (await request.json()) as unknown;
-    const parsedInput = generateResponseInputSchema.parse(raw);
+    const body = (await request.json()) as Partial<Payload>;
 
-    if (!hasOpenAIKey()) {
-      return NextResponse.json({
-        response: generateResponseHeuristically(parsedInput),
-        source: "heuristic",
-      });
+    if (!body.mode || (body.mode !== "message" && body.mode !== "chat")) {
+      return NextResponse.json({ message: "Invalid mode" }, { status: 400 });
     }
 
-    const completion = await getOpenAIClient().chat.completions.create({
-      model: OPENAI_MODEL,
-      temperature: 0.4,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an expert salary negotiation writer. Return only valid JSON output.",
-        },
-        {
-          role: "user",
-          content: responsePrompt(JSON.stringify(parsedInput)),
-        },
-      ],
+    if (!body.offerText || body.offerText.trim().length < 120) {
+      return NextResponse.json({ message: "Offer text is too short" }, { status: 400 });
+    }
+
+    if (!isOfferAnalysis(body.analysis)) {
+      return NextResponse.json({ message: "Analysis payload is missing required fields" }, { status: 400 });
+    }
+
+    if (body.mode === "message") {
+      const messageBody = body as Partial<MessageModeRequest>;
+
+      if (!messageBody.responseType || !messageBody.tone) {
+        return NextResponse.json({ message: "Missing responseType or tone" }, { status: 400 });
+      }
+
+      const generated = await generateResponse({
+        offerText: body.offerText,
+        analysis: body.analysis,
+        responseType: messageBody.responseType,
+        tone: messageBody.tone,
+        targetCompensation: messageBody.targetCompensation
+      });
+
+      return NextResponse.json({ generated });
+    }
+
+    const chatBody = body as Partial<ChatModeRequest>;
+
+    if (!chatBody.userMessage || !Array.isArray(chatBody.history)) {
+      return NextResponse.json({ message: "Missing chat history or user message" }, { status: 400 });
+    }
+
+    const coached = await coachChat({
+      offerText: body.offerText,
+      analysis: body.analysis,
+      history: chatBody.history,
+      userMessage: chatBody.userMessage
     });
 
-    const content = completion.choices[0]?.message?.content;
-
-    if (!content) {
-      throw new Error("No model output");
-    }
-
-    const response = generatedResponseSchema.parse(
-      JSON.parse(content),
-    ) satisfies GeneratedResponse;
-
-    return NextResponse.json({ response, source: "openai" });
-  } catch (error) {
-    if (error instanceof ZodError) {
-      return NextResponse.json(
-        {
-          error: error.errors[0]?.message ?? "Invalid response-generation input.",
-        },
-        { status: 400 },
-      );
-    }
-
-    return NextResponse.json(
-      {
-        error:
-          "We could not generate your negotiation message. Please retry in a moment.",
-      },
-      { status: 500 },
-    );
+    return NextResponse.json(coached);
+  } catch {
+    return NextResponse.json({ message: "Failed to generate response" }, { status: 500 });
   }
 }
